@@ -8,11 +8,55 @@ import java.util.concurrent.TimeUnit;
 public class fileTransferHandler implements Runnable{
 	public cdht me;
 	public fileRequestPacket obj;
+	public boolean awaitingAck = false;
+	public int awaitingSeqNum;
 	
 	public fileTransferHandler(cdht _me, fileRequestPacket _obj) {
 		me = _me;
 		obj = _obj;
 	}
+	
+	public void stopWaiting() {
+		awaitingAck = false;
+	}
+	
+	public void startWaiting() {
+		awaitingAck = true;
+	}
+	
+	public boolean getWaitingStatus() {
+		return awaitingAck;
+	}
+	
+	public int getAwaitingSeqNum() {
+		return awaitingSeqNum;
+	}
+	
+	public void setAwaitingSeqNum(int s) {
+		awaitingSeqNum = s;
+	}
+	
+	//function to abstracting the feature for waiting for an ACK
+	//waits for an ACK, will resend fileResponsePacket if no ACK received within 1 second
+	public void waitForAck(int seqNum, fileResponsePacket frp) {
+		startWaiting();
+		setAwaitingSeqNum(seqNum);
+		long lastPacketTime = System.currentTimeMillis();
+		while(getWaitingStatus() == true) {
+			if((System.currentTimeMillis() - lastPacketTime) >= 1000) {
+				System.out.println("I HAVE TIMED OUT WAITING FOR CLIENT "+obj.sourcePort+" TO SEND ACK: "+seqNum);
+				System.out.println("Resending packet: "+seqNum);
+				//resend packet and reset timer
+				try {
+					me.sendObject(frp, me, obj.sourcePort);
+				} catch (IOException e) {
+					e.printStackTrace();
+				}
+				lastPacketTime = System.currentTimeMillis();
+			}
+		}
+	}
+	
 	
 	public byte[] fileToByteArray(String fileName) throws IOException {
 		FileInputStream fin = new FileInputStream(fileName);
@@ -42,6 +86,7 @@ public class fileTransferHandler implements Runnable{
 		System.out.println("A response message, destined for peer "+obj.sourcePort+", has been sent.");
 		System.out.println("We now start sending the file .........");
 		//i increments by MSS
+		//i also represents the sequence number of each packet (byte index)
 		for(int i = 0; i < wholeFile.length; i += me.MSS) {
 			byte[] currentChunk = null;
 			//if currentChunk is the last chunk of the file
@@ -50,22 +95,22 @@ public class fileTransferHandler implements Runnable{
 			}else {
 				currentChunk = Arrays.copyOfRange(wholeFile, i, i+me.MSS);
 			}	
-			frp = new fileResponsePacket("fres", me.port, obj.sourcePort, currentChunk);
+			frp = new fileResponsePacket("fres", me.port, obj.sourcePort, currentChunk, i);
 			
 			//if currentChunk is the last chunk, set lastPacket in frp to be true
 			if((i+me.MSS) > wholeFile.length) {
 				frp.setLast();
+				//(loop should terminate since the invariant wont be satisfied)
 			}
 			try {
 				me.sendObject(frp, me, obj.sourcePort);
 			} catch (IOException e) {
 				e.printStackTrace();
 			}	
-			try {
-				TimeUnit.SECONDS.sleep(3);
-			} catch (InterruptedException e) {
-				e.printStackTrace();
-			}
+			
+			//waits for an ACK, will resend fileResponsePacket frp if no ACK received within 1 second
+			waitForAck(i, frp);
+			
 		}
 	}
 

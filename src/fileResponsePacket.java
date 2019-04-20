@@ -3,10 +3,12 @@ public class fileResponsePacket extends peerToPeerPacket implements java.io.Seri
 
 	public byte[] fileChunk;
 	private boolean lastPacket = false;
+	public int seqNum;
 	
-	public fileResponsePacket(String _type, int _sourcePort, int _destPort, byte[] _fileChunk) {
+	public fileResponsePacket(String _type, int _sourcePort, int _destPort, byte[] _fileChunk, int _seqNum) {
 		super(_type, _sourcePort, _destPort);
 		fileChunk = _fileChunk;
+		seqNum = _seqNum;
 	}
 	
 	public boolean isLast() {

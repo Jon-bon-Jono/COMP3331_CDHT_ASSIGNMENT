@@ -8,19 +8,21 @@ import java.io.ObjectOutputStream;
 import java.io.OutputStream;
 import java.net.*;
 
-import com.sun.swing.internal.plaf.metal.resources.metal;
+//import com.sun.swing.internal.plaf.metal.resources.metal;
 
 public class cdht{
-	private int ID; //[0,255]
-	private int succID1; //[0,255]
-	private int succID2; //[0,255]
+	public int ID; //[0,255]
 	public int port;
-	public int succPort1;
-	public int succPort2;
 	public int MSS;
 	private float dropProb; //(0,1)
+	//successors
+	private int succID1; //[0,255]
+	private int succID2; //[0,255]
+	public int succPort1;
+	public int succPort2;
 	public InetAddress host;
 	public DatagramSocket socket;
+	public int expectedSeqNum;
 	
 	public cdht (int _ID, int _succID1, int _succID2, int _MSS,float _dropProb) throws UnknownHostException, SocketException{
 		ID = _ID;
@@ -36,6 +38,7 @@ public class cdht{
 		//TIMEOUT FOR UDP SOCKET IS 1 SECOND
 		socket.setSoTimeout(1000);
 	}
+	//sends a peerToPeerPacket object via datagram packet to port (int destination)
 	public void sendObject(peerToPeerPacket obj, cdht me, int destination) throws IOException {
 		ByteArrayOutputStream bStream = new ByteArrayOutputStream();
 		ObjectOutputStream oo = null;
@@ -46,35 +49,31 @@ public class cdht{
 		DatagramPacket pingPacket = new DatagramPacket(serializedPacket, serializedPacket.length, me.host, destination);
 		me.socket.send(pingPacket);
 	}
-	//forwards file request either to responder or intermediate peer
-	//triggers TCP response if client is the recipient
-	public void processRequest(fileRequestPacket r, cdht me) throws IOException {
-		//check if my successors have the file requested
-		
+	
+	//processes file request
+	//forwards it to first successor
+	//sets youAreOwner to true if first successor is the responder
+	public void processRequest(fileRequestPacket r, cdht me) throws IOException {		
 		//if successor 1 is the recipient of the packet, change youAreOwner boolean to true 
 		if(me.succPort1 == r.destPort || (me.port < r.destPort && r.destPort < me.succPort1)){
 			//notifies that successor 1 should respond to request and not forward the request
-			r.areOwner();
-			
+			r.setResponder();
 		}
 		System.out.println("File "+r.fileName+" is not stored here.");
+		//for
 		me.sendObject(r, me, succPort1);
 		System.out.println("File request message has been forwarded to my successor.");
 	
 	}
 	
-	//used to append byte streams (to construct a requested file chunk by chunk)
-	public static byte[] append(byte[] a1, byte[] a2) {
-	    byte [] ret = new byte[a1.length + a2.length];
-	    System.arraycopy(a1, 0, ret, 0, a1.length);
-	    System.arraycopy(a2, 0, ret, a1.length, a2.length);
-	    return ret;
-	 }
 	
 	public static void main(String[] args) throws NumberFormatException, IOException, ClassNotFoundException {
 		if(args.length < 5) {
 			System.out.println("Usage: <ID> <successor ID> <successor ID> <MSS> <drop probability>");
 			return;
+		}
+		if(Float.parseFloat(args[4]) > 0 && Float.parseFloat(args[4])<1) {
+			System.out.println("Usage: 0 < drop probability < 1");
 		}
 		try{
 			Integer.parseInt(args[0]);
@@ -85,33 +84,38 @@ public class cdht{
 		}catch(NumberFormatException e){
 			System.out.println("Usage: <int: ID> <int: successor ID> <int: successor ID> <int: MSS> <float: drop probability>");
 		}
-		byte[] fileData = null;
-		
 		//instantiate the client
 		cdht me = new cdht(Integer.parseInt(args[0]), Integer.parseInt(args[1]), Integer.parseInt(args[2]), Integer.parseInt(args[3]), Float.parseFloat(args[4]));
 		//instantiate and run user input handler
 		userInputHandler uih = new userInputHandler(me);
 		Thread uihThread = new Thread(uih);
 		uihThread.start();
-		//instantiate and run two separate pingHandler
+		//instantiate and run two separate pingHandlers
 		pingHandler pinger1 = new pingHandler(me, me.succPort1);
 		pingHandler pinger2 = new pingHandler(me, me.succPort2);
 		Thread pingThread1 = new Thread(pinger1);
 		//pingThread1.start();
 		Thread pingThread2 = new Thread(pinger2);
 		//pingThread2.start();
-		//main client loop for receiving any and all packets
+		//init fileTransferHandler
+		fileTransferHandler fth = null;
+		Thread fthThread = null;
+		//init fileData buffer for received file chunks
+		byte[] fileData = null;
+		//init fileReceiveHandler
+		fileReceiveHandler frh = null;
+		//main loop for receiving any and all packets
 		while(true) {
-			//given the types of packets being processed in cdht, the max size of any packet is 200
+			//given the types of packets being processed in cdht, the max size of any packet will be 200+MSS
 			DatagramPacket receivedPacket = new DatagramPacket(new byte[me.MSS+200], me.MSS+200);
-			//receive
+			//receive datagram packet
 			try {
 				me.socket.receive(receivedPacket);
 			}catch (SocketTimeoutException e) {
 				continue;
 			}
 			//add a time sent to each packet!!!!!!!!!!!!!!!!!!!!!!!!!
-			//convert packet to object to extract header
+			//convert the packet to an object to extract header
 			ObjectInputStream socketStream = new ObjectInputStream(new ByteArrayInputStream(receivedPacket.getData()));
 			peerToPeerPacket receivedPacketObject = (peerToPeerPacket) socketStream.readObject();
 			socketStream.close();
@@ -141,43 +145,38 @@ public class cdht{
 			}else if(receivedPacketObject.type.equals("freq?")) {
 				fileRequestPacket freq = (fileRequestPacket) receivedPacketObject;
 				//if client has the file
-				if(freq.amIOwner()) {
-					//respond to request
-					//instantiate the fileTransferHandler and start thread
-					fileTransferHandler fth = new fileTransferHandler(me, freq);
-					Thread fthThread = new Thread(fth);
+				if(freq.amIResponder()) {
+					//respond to request, setup TCP connection
+					fth = new fileTransferHandler(me, freq);
+					fthThread = new Thread(fth);
 					//start thread to send requested file
 					fthThread.start();
-				//client doesn't have the file and will forward the freq? to a successor
+				//else forward request to successor
 				}else{
 					me.processRequest(freq, me);
 				}
-			
+			//could separate this into a thread for receiving data
+			//variable for fres object and for expected seq num ect..
 			//receives a file response packet
 			}else if(receivedPacketObject.type.equals("fres")){
 				fileResponsePacket fres = (fileResponsePacket) receivedPacketObject;
-				//append fileChunk to fileData byte array
-				if(fileData == null) {
-					fileData = fres.fileChunk;
+				//if first packet for TCP connection, start new thread
+				if(fres.seqNum == 0) {
+					frh = new fileReceiveHandler(me, fres);
+					Thread frhThread = new Thread(frh);
+					frhThread.start();
 				}else {
-					fileData = append(fileData, fres.fileChunk);
+					frh.currPacket = fres;
 				}
-				//System.arraycopy(fres.fileChunk, 0, fileData, fileData.length, fileData.length+fres.fileChunk.length);
-				
-				//if fres is the final packet, write fileData to a file
-				//open the pdf or whatever
-				if(fres.isLast() == true) {
-					OutputStream out;
-					try {       
-				        out = new FileOutputStream(me.ID+"_received.pdf");
-				        out.write(fileData, 0, fileData.length);
-				        //out.position = 0;
-				        out.close();
-				        System.out.println("The file is received.");
-				    }catch (Exception e) {
-				        System.out.println(e);
-				    }
+			}else if(receivedPacketObject.type.equals("ack")) {
+				ackPacket ack = (ackPacket) receivedPacketObject;
+				//test if ACK is in order
+				if(fth != null && fth.getWaitingStatus() == true && ack.ackNum == fth.getAwaitingSeqNum()){
+					fth.stopWaiting();
+				}else {
+					System.out.println("We either received an out of order ACK or client wasn't awaiting an ACK");
 				}
+					
 			}
 			receivedPacket = null;
 			receivedPacketObject = null;
