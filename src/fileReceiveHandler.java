@@ -49,7 +49,6 @@ public class fileReceiveHandler implements Runnable{
 				try {
 					me.sendObject(ack, me, currPacket.sourcePort);
 				} catch (IOException e) {
-					// TODO Auto-generated catch block
 					e.printStackTrace();
 				}
 				//append file data

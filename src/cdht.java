@@ -23,6 +23,8 @@ public class cdht{
 	public InetAddress host;
 	public DatagramSocket socket;
 	public int expectedSeqNum;
+	public int predPort1;
+	public int predPort2;
 	
 	public cdht (int _ID, int _succID1, int _succID2, int _MSS,float _dropProb) throws UnknownHostException, SocketException{
 		ID = _ID;
@@ -37,6 +39,9 @@ public class cdht{
 		socket = new DatagramSocket(port, host);
 		//TIMEOUT FOR UDP SOCKET IS 1 SECOND
 		socket.setSoTimeout(1000);
+		//unknown at this time
+		predPort1 = 0;
+		predPort2 = 0;
 	}
 	//sends a peerToPeerPacket object via datagram packet to port (int destination)
 	public void sendObject(peerToPeerPacket obj, cdht me, int destination) throws IOException {
@@ -50,6 +55,14 @@ public class cdht{
 		me.socket.send(pingPacket);
 	}
 	
+	//sets predecessor ports
+	public void setPredPort(int pingSource, cdht me) {
+		if(pingSource >= me.predPort1 && pingSource < me.port) {
+			me.predPort1 = pingSource;
+		}else if(pingSource < me.predPort1 && pingSource >= me.predPort2) {
+			me.predPort2 = pingSource;
+		}
+	}
 	//processes file request
 	//forwards it to first successor
 	//sets youAreOwner to true if first successor is the responder
@@ -133,9 +146,11 @@ public class cdht{
 					pinger2.stopWaiting();
 				}
 			//receives ping? request, sends a response ping
+			//sets predecessor ports based on the source of the ping?
 			//for some reason, after the first successful ping session a client will receive a ping response from a server they haven't pinged yet??
 			}else if(receivedPacketObject.type.equals("ping?")) {
 				System.out.println("Rec ping? from "+receivedPacket.getPort());
+				me.setPredPort(receivedPacketObject.sourcePort, me);
 				peerToPeerPacket ping = new peerToPeerPacket("ping", me.port, receivedPacketObject.sourcePort);
 				//send response ping
 				me.sendObject(ping, me, receivedPacketObject.sourcePort);
@@ -155,9 +170,7 @@ public class cdht{
 				}else{
 					me.processRequest(freq, me);
 				}
-			//could separate this into a thread for receiving data
-			//variable for fres object and for expected seq num ect..
-			//receives a file response packet
+			//receives a file response packet (contains fileChunk)
 			}else if(receivedPacketObject.type.equals("fres")){
 				fileResponsePacket fres = (fileResponsePacket) receivedPacketObject;
 				//if first packet for TCP connection, start new thread
@@ -168,6 +181,7 @@ public class cdht{
 				}else {
 					frh.currPacket = fres;
 				}
+			//receives an ACK packet, calls stopWaiting function if expected
 			}else if(receivedPacketObject.type.equals("ack")) {
 				ackPacket ack = (ackPacket) receivedPacketObject;
 				//test if ACK is in order
@@ -176,7 +190,23 @@ public class cdht{
 				}else {
 					System.out.println("We either received an out of order ACK or client wasn't awaiting an ACK");
 				}
-					
+			//receives peer departure packet		
+			}else if(receivedPacketObject.type.equals("dep")) {
+				departurePacket dep = (departurePacket) receivedPacketObject;
+				//update successor ports
+				if(dep.sourcePort == me.succPort1) {
+					me.succPort1 = dep.mySucc1;
+					me.succPort2 = dep.mySucc2;
+				}else if(dep.sourcePort == me.succPort2) {
+					me.succPort2 = dep.mySucc1;
+				}
+				//ack departure message
+				ackPacket depack = new ackPacket("depack", me.port, dep.sourcePort,-1);
+				
+			//receives an ACK for departure
+			}else if(receivedPacketObject.type.equals("depack")){
+				//can now terminate receiver loop
+				break;
 			}
 			receivedPacket = null;
 			receivedPacketObject = null;
